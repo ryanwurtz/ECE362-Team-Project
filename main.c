@@ -1,7 +1,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <time.h> //random number generator like rand() and srand()
+#include <time.h> //random number generator like rand() and srand() :)
 
 #define GRID_SIZE 10 // Size of the game grid (10x10)
 #define NUM_BLOCKS 3 // Number of predefined block types
