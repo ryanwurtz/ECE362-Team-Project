@@ -1,0 +1,5 @@
+---
+triple:          'arm64-apple-darwin'
+binary-path:     '/Users/nathanaelmathew/Documents/GitHub/ECE362-Team-Project/main'
+relocations:     []
+...
