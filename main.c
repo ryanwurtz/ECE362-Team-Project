@@ -145,16 +145,16 @@ int main() {
         print_grid();
 
         if (all_used()) {
-            printf("New set of blocks generated!\n");
+            printf("New blocks made!\n");
             generate_choices();
         }
 
         if (!any_valid_placement_exists()) {
-            printf("Game over! No more valid placements.\n");
+            printf("Game over! Sorry ¯_(ツ)_/¯.\n");
             break;
         }
 
-        printf("Available blocks to choose from:\n");
+        printf("Blocks to choose from:\n");
         for (int i = 0; i < 3; i++) {
             if (!used_choices[i]) {
                 printf("Block choice %d (index %d):\n", i, current_choices[i]);
@@ -167,7 +167,7 @@ int main() {
         int choice, x, y;
         printf("Choose a block index (0, 1, or 2) or -1 to quit: ");
         if (scanf("%d", &choice) != 1 || (choice >= 0 && choice < 3 && used_choices[choice])) {
-            printf("Invalid or already used choice. Try again.\n");
+            printf("Invalid or already used choice. Try again brudda.\n");
             while(getchar() != '\n');
             continue;
         }
@@ -175,7 +175,7 @@ int main() {
 
         printf("Enter top-left position to place the block (row col): ");
         if (scanf("%d %d", &x, &y) != 2) {
-            printf("Invalid input format. Please enter two integers (row col).\n");
+            printf("Wrong format dude. Please enter two integers (row col).\n");
             while(getchar() != '\n');
             continue;
         }
@@ -185,7 +185,7 @@ int main() {
             used_choices[choice] = 1;
             clear_lines();
         } else {
-            printf("Invalid placement. Try again.\n");
+            printf("Invalid placement big dawg. Try again.\n");
         }
     }
 
