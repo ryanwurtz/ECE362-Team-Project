@@ -113,7 +113,7 @@ void TIM2_IRQHandler() {
 
 int main(void) {
     internal_clock();
-    highscore=10;
+    highscore=15;
     currentscore=0;
 
     initc();
