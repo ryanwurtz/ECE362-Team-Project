@@ -1,0 +1,7 @@
+{
+    "files.associations": {
+        "1234": "cpp",
+        "stm32f0xx.h": "c",
+        "stdlib.h": "c"
+    }
+}
