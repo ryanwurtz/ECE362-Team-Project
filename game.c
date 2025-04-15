@@ -1,14 +1,18 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+#include "oled_display.c" //spi
 
 #define GRID_SIZE 10
 #define BLOCK_SIZE 3
 #define MAX_BLOCKS 19
 
+void update_score_display(int score, int high_score); //defining function from oled_display
+
 //the grid. a digital frontier. I tried to picture clusters of information as they moved through the computer. What did they look like? Ships? Motorcycles?
 int grid[GRID_SIZE][GRID_SIZE] = {0};
 int score = 0;
+int high_score = 0;  // 👈 NEW: track the highest score
 
 int blocks[MAX_BLOCKS][BLOCK_SIZE][BLOCK_SIZE] = { //da predefined blocks
     {{1, 1, 1}, {0, 0, 0}, {0, 0, 0}},  // Horizontal line
@@ -45,7 +49,7 @@ void generate_choices() {
 }
 
 void print_grid() { //Print the current game grid and score
-    printf("Score: %d\n", score);
+    printf("Score: %d | High Score: %d\n", score, high_score);  // 👈 UPDATED
     for (int i = 0; i < GRID_SIZE; i++) {
         for (int j = 0; j < GRID_SIZE; j++) {
             printf("%d ", grid[i][j]);
@@ -127,6 +131,10 @@ int clear_lines() {
         }
     }
     score += lines_cleared; //update score based on the number of lines cleared
+    if (score > high_score) {// 👈 NEW: update high score
+        high_score = score;
+    }
+    update_score_display(score, high_score); //calling the function from oled_display.c
     return lines_cleared;
 }
 
@@ -147,7 +155,6 @@ int all_used() { //check if all blocks are used
 int main() {
     srand(time(NULL)); //random blocks
     generate_choices(); //make block choices
-
     while (1) {
         print_grid();
 
