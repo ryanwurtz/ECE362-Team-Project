@@ -1,32 +1,161 @@
 #include "stm32f0xx.h"
 #include <stdio.h>
 #include <stdint.h>
+#include <stdlib.h>
+#include <time.h>
+#include <stdbool.h>
 #include "lcd.h"
 
 void nano_wait(int t);
 void internal_clock();
 
+//define statements for TFT
+#define SPI SPI2
+#define CS_NUM  8
+#define CS_BIT  (1<<CS_NUM)
+#define CS_HIGH do { GPIOB->BSRR = GPIO_BSRR_BS_8; } while(0)
+#define CS_LOW do { GPIOB->BSRR = GPIO_BSRR_BR_8; } while(0)
+#define RESET_NUM 11
+#define RESET_BIT (1<<RESET_NUM)
+#define RESET_HIGH do { GPIOB->BSRR = GPIO_BSRR_BS_11; } while(0)
+#define RESET_LOW  do { GPIOB->BSRR = GPIO_BSRR_BR_11; } while(0)
+#define DC_NUM 14
+#define DC_BIT (1<<DC_NUM)
+#define DC_HIGH do { GPIOB->BSRR = GPIO_BSRR_BS_14; } while(0)
+#define DC_LOW  do { GPIOB->BSRR = GPIO_BSRR_BR_14; } while(0)
+
+//Global Variables
 uint16_t highscore;
 char highscorestring[16];
 uint16_t currentscore;
 char currentscorestring[16];
+int grid[10][10] = {0};
+int current_choices[3] = {-1, -1, -1};
+int used_choices[3] = {0, 0, 0};
+int blocks[19][3][3] = { //da predefined blocks
+    {{1, 1, 1}, {0, 0, 0}, {0, 0, 0}},  // Horizontal line
+    {{1, 0, 0}, {1, 0, 0}, {1, 0, 0}},  // Vertical line
+    {{1, 1, 0}, {1, 1, 0}, {0, 0, 0}},  // 2x2 square + extra cell
+    {{0, 1, 0}, {1, 1, 1}, {0, 0, 0}},  // T-shape
+    {{1, 1, 1}, {0, 1, 0}, {0, 0, 0}},  // T-shape (alt)
+    {{1, 0, 0}, {1, 0, 0}, {1, 1, 0}},  // L-shape
+    {{0, 0, 1}, {0, 0, 1}, {0, 1, 1}},  // Reverse L
+    {{1, 1, 0}, {0, 1, 1}, {0, 0, 0}},  // Z-shape
+    {{0, 1, 1}, {1, 1, 0}, {0, 0, 0}},  // S-shape
+    {{1, 0, 0}, {0, 0, 0}, {0, 0, 0}},  // Single block
+    {{1, 1, 0}, {0, 0, 0}, {0, 0, 0}},  // 2x1 block
+    {{1, 0, 0}, {1, 0, 0}, {0, 0, 0}},  // 2x1 vertical
+    {{1, 1, 1}, {0, 0, 0}, {0, 0, 0}},  // 3x1 horizontal
+    {{1, 0, 0}, {1, 0, 0}, {1, 0, 0}},  // 3x1 vertical
+    {{0, 0, 1}, {0, 0, 1}, {0, 1, 1}},  // Corner block
+    {{1, 1, 0}, {1, 1, 0}, {0, 0, 0}},  // 2x2 square
+    {{1, 0, 0}, {1, 1, 0}, {1, 0, 0}},  // T-shape tall
+    {{1, 1, 0}, {0, 1, 1}, {0, 0, 0}},  // Diagonal zigzag
+    {{1, 0, 0}, {0, 0, 0}, {0, 0, 0}}   // Single block
+};
+// 16 history bytes.  Each byte represents the last 8 samples of a button.
+uint8_t hist[16];
+char queue[2];  // A two-entry queue of button press/release events.
+int qin;        // Which queue entry is next for input
+int qout;       // Which queue entry is next for output
+const char keymap[] = "DCBA#9630852*741";
+uint8_t col;
+char title[24];
+char key;
+int x, y;
 
+//Keypad GPIO Stuff/Timer for random number generator
 void initc() {
     RCC->AHBENR |= RCC_AHBENR_GPIOCEN;
-    GPIOC->MODER |= 0x00005500; //setting output pins
-    GPIOC->MODER &= 0xFFFFFF00; //setting input pins
-    GPIOC->PUPDR |= 0x000000AA; //setting pull down resistors
-    GPIOC->BSRR = 1 << 6;
+    GPIOC->MODER &= ~0xffff;
+    GPIOC->MODER |= 0x55 << (4*2);
+    GPIOC->OTYPER &= ~0xff;
+    GPIOC->OTYPER |= 0xf0;
+    GPIOC->PUPDR &= ~0xff;
+    GPIOC->PUPDR |= 0x55;
 }
-//100 Hz update
-void init_tim2(void) {
-    RCC->APB1ENR |= RCC_APB1ENR_TIM2EN; //clock enable
-    TIM2->DIER |= TIM_DIER_UIE; //update interrupt enable
-    TIM2->PSC = 47; //1 hz configuration
-    TIM2->ARR = 99999;
-    NVIC->ISER[0] |= 1 << 15; //tim 2 interrupt enable
-    TIM2->CR1 |= TIM_CR1_CEN; //count enable
+void init_tim7(void) {
+    RCC->APB1ENR |= RCC_APB1ENR_TIM7EN; //clock enable
+    TIM7->PSC = 47;
+    TIM7->ARR = 999;
+    TIM7->DIER |= TIM_DIER_UIE; //interrupt enabled on update
+    NVIC->ISER[0] |= 0x00040000; //enabling tim7 interrupt in nvic
+    TIM7->CR1 |= TIM_CR1_CEN; //counter enable
 }
+void init_tim2_rand() {
+    RCC->AHBENR |= RCC_AHBENR_GPIOBEN;
+    GPIOB->PUPDR |= 0x00000020;
+    RCC->APB1ENR |= RCC_APB1ENR_TIM2EN;
+    TIM2->PSC = 5;
+    TIM2->ARR = 11999999;
+    TIM2->CR1 |= TIM_CR1_CEN; 
+}
+void push_queue(int n) {
+    queue[qin] = n;
+    qin ^= 1;
+}
+char pop_queue() {
+    char tmp = queue[qout];
+    queue[qout] = 0;
+    qout ^= 1;
+    return tmp;
+}
+void update_history(int c, int rows)
+{
+    // We used to make students do this in assembly language.
+    for(int i = 0; i < 4; i++) {
+        hist[4*c+i] = (hist[4*c+i]<<1) + ((rows>>i)&1);
+        if (hist[4*c+i] == 0x01)
+            push_queue(0x80 | keymap[4*c+i]);
+        if (hist[4*c+i] == 0xfe)
+            push_queue(keymap[4*c+i]);
+    }
+}
+void drive_column(int c)
+{
+    GPIOC->BSRR = 0xf00000 | ~(1 << (c + 4));
+}
+int read_rows()
+{
+    return (~GPIOC->IDR) & 0xf;
+}
+char get_key_event(void) {
+    for(;;) {
+        asm volatile ("wfi");   // wait for an interrupt
+        if (queue[qout] != 0)
+            break;
+    }
+    return pop_queue();
+}
+char get_keypress() {
+    char event;
+    for(;;) {
+        // Wait for every button event...
+        event = get_key_event();
+        // ...but ignore if it's a release.
+        if (event & 0x80)
+            break;
+    }
+    return event & 0x7f;
+}
+void TIM7_IRQHandler() {
+    TIM7->SR &= ~TIM_SR_UIF;
+    int rows = read_rows();
+    update_history(col, rows);
+    col = (col + 1) & 3;
+    drive_column(col);
+}
+void init_exti() {
+    RCC->APB2ENR |= RCC_APB2ENR_SYSCFGCOMPEN;
+    SYSCFG->EXTICR[0] |= SYSCFG_EXTICR1_EXTI0_PA;
+    EXTI->RTSR |= EXTI_RTSR_TR0;
+    EXTI->IMR |= EXTI_IMR_IM0;
+    NVIC->ISER[0] |= 1 << 5;
+    RCC->AHBENR |= RCC_AHBENR_GPIOAEN;
+    GPIOA->PUPDR |= 0x00000002;
+}
+
+//OLED Display SPI Stuff
 void init_spi1() {
     RCC->APB2ENR |= RCC_APB2ENR_SPI1EN;
     RCC->AHBENR |= RCC_AHBENR_GPIOAEN;
@@ -45,7 +174,6 @@ void spi_cmd(unsigned int data) {
     while ((SPI1->SR & SPI_SR_TXE) == 0) { }
     SPI1->DR = data;
 }
-//0x200 is the bitmask for a register read/write as opposed to a command
 void spi_data(unsigned int data) {
     spi_cmd(data | 0x200);
 }
@@ -80,42 +208,15 @@ void spi1_display2(const char *string) {
         i++;
     }
 }
-//OLED Display Update
-void TIM2_IRQHandler() {
-    TIM2->SR &= ~TIM_SR_UIF;
-    int c = (GPIOC->IDR & (1 << 1)) ? 1 : 0;
-    nano_wait(100000); //wait 0.1 ms
-    if (c) {
-        currentscore +=1;
-    }
-    if (currentscore >= highscore) {
-        highscore = currentscore;
-    }
-    sprintf(highscorestring, "High Score:%d", highscore); //update
+void update_oled(uint16_t current, uint16_t high) {
+    sprintf(highscorestring, "High Score:%d", high);
     spi1_display1(highscorestring);
-    sprintf(currentscorestring, "Curr Score:%d", currentscore); //update
+    sprintf(currentscorestring, "Curr Score:%d", current);
     spi1_display2(currentscorestring);
 }
 
+//TFT interfacing stuff
 lcd_dev_t lcddev;
-
-#define SPI SPI2
-
-#define CS_NUM  8
-#define CS_BIT  (1<<CS_NUM)
-#define CS_HIGH do { GPIOB->BSRR = GPIO_BSRR_BS_8; } while(0)
-#define CS_LOW do { GPIOB->BSRR = GPIO_BSRR_BR_8; } while(0)
-#define RESET_NUM 11
-#define RESET_BIT (1<<RESET_NUM)
-#define RESET_HIGH do { GPIOB->BSRR = GPIO_BSRR_BS_11; } while(0)
-#define RESET_LOW  do { GPIOB->BSRR = GPIO_BSRR_BR_11; } while(0)
-#define DC_NUM 14
-#define DC_BIT (1<<DC_NUM)
-#define DC_HIGH do { GPIOB->BSRR = GPIO_BSRR_BS_14; } while(0)
-#define DC_LOW  do { GPIOB->BSRR = GPIO_BSRR_BR_14; } while(0)
-
-// Set the CS pin low if val is non-zero.
-// Note that when CS is being set high again, wait on SPI to not be busy.
 static void tft_select(int val)
 {
     if (val == 0) {
@@ -134,7 +235,6 @@ static void tft_select(int val)
         CS_LOW;
     }
 }
-// If val is non-zero, set nRESET low to reset the display.
 static void tft_reset(int val)
 {
     if (val) {
@@ -143,7 +243,6 @@ static void tft_reset(int val)
         RESET_HIGH;
     }
 }
-// If
 static void tft_reg_select(int val)
 {
     if (val == 1) { // select registers
@@ -159,7 +258,6 @@ void LCD_Reset(void)
     lcddev.reset(0);      // De-assert reset
     nano_wait(50000000);  // Wait
 }
-// Write to an LCD "register"
 void LCD_WR_REG(uint8_t data)
 {
     while((SPI->SR & SPI_SR_BSY) != 0)
@@ -168,7 +266,6 @@ void LCD_WR_REG(uint8_t data)
     lcddev.reg_select(1);
     *((volatile uint8_t*)&SPI->DR) = data;
 }
-// Write 8-bit data to the LCD
 void LCD_WR_DATA(uint8_t data)
 {
     while((SPI->SR & SPI_SR_BSY) != 0)
@@ -177,35 +274,29 @@ void LCD_WR_DATA(uint8_t data)
     lcddev.reg_select(0);
     *((volatile uint8_t*)&SPI->DR) = data;
 }
-// Prepare to write 16-bit data to the LCD
 void LCD_WriteData16_Prepare()
 {
     lcddev.reg_select(0);
     SPI->CR2 |= SPI_CR2_DS;
 }
-// Write 16-bit data
 void LCD_WriteData16(u16 data)
 {
     while((SPI2->SR & SPI_SR_TXE) == 0);
     SPI->DR = data;
 }
-// Finish writing 16-bit data
 void LCD_WriteData16_End()
 {
     SPI->CR2 &= ~SPI_CR2_DS; // bad value forces it back to 8-bit mode
 }
-// Select an LCD "register" and write 8-bit data to it.
 void LCD_WriteReg(uint8_t LCD_Reg, uint16_t LCD_RegValue)
 {
     LCD_WR_REG(LCD_Reg);
     LCD_WR_DATA(LCD_RegValue);
 }
-// Issue the "write RAM" command configured for the display.
 void LCD_WriteRAM_Prepare(void)
 {
     LCD_WR_REG(lcddev.wramcmd);
 }
-// Configure the lcddev fields for the display orientation.
 void LCD_direction(u8 direction)
 {
     lcddev.setxcmd=0x2A;
@@ -235,7 +326,6 @@ void LCD_direction(u8 direction)
     default:break;
     }
 }
-// Do the initialization sequence for the display.
 void LCD_Init(void (*reset)(int), void (*select)(int), void (*reg_select)(int))
 {
     lcddev.reset = tft_reset;
@@ -366,7 +456,6 @@ void LCD_Setup() {
     tft_reg_select(0);
     LCD_Init(tft_reset, tft_select, tft_reg_select);
 }
-// Select a subset of the display to work on, and issue the "Write RAM" command to prepare to send pixel data to it.
 void LCD_SetWindow(uint16_t xStart, uint16_t yStart, uint16_t xEnd, uint16_t yEnd)
 {
     LCD_WR_REG(lcddev.setxcmd);
@@ -383,7 +472,6 @@ void LCD_SetWindow(uint16_t xStart, uint16_t yStart, uint16_t xEnd, uint16_t yEn
 
     LCD_WriteRAM_Prepare();
 }
-// Set the entire display to one color
 void LCD_Clear(u16 Color)
 {
     lcddev.select(1);
@@ -413,7 +501,6 @@ void LCD_DrawPoint(u16 x, u16 y, u16 c)
     _LCD_DrawPoint(x,y,c);
     lcddev.select(0);
 }
-// Draw a line of color c from (x1,y1) to (x2,y2).
 static void _LCD_DrawLine(u16 x1, u16 y1, u16 x2, u16 y2, u16 c)
 {
     u16 t;
@@ -455,7 +542,6 @@ void LCD_DrawLine(u16 x1, u16 y1, u16 x2, u16 y2, u16 c)
     _LCD_DrawLine(x1,y1,x2,y2,c);
     lcddev.select(0);
 }
-// A 12x6 font
 const unsigned char asc2_1206[95][12]={
     {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},/*" ",0*/
     {0x00,0x00,0x04,0x04,0x04,0x04,0x04,0x04,0x00,0x04,0x00,0x00},/*"!",1*/
@@ -553,7 +639,6 @@ const unsigned char asc2_1206[95][12]={
     {0x00,0x06,0x04,0x04,0x04,0x08,0x04,0x04,0x04,0x04,0x06,0x00},/*"}",93*/
     {0x02,0x25,0x18,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00} /*"~",94*/
     }; 
-// A 16x8 font
 const unsigned char asc2_1608[95][16]={
     {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},/*" ",0*/
     {0x00,0x00,0x00,0x08,0x08,0x08,0x08,0x08,0x08,0x08,0x00,0x00,0x18,0x18,0x00,0x00},/*"!",1*/
@@ -651,11 +736,6 @@ const unsigned char asc2_1608[95][16]={
     {0x00,0x06,0x08,0x08,0x08,0x08,0x08,0x10,0x08,0x08,0x08,0x08,0x08,0x08,0x06,0x00},/*"}",93*/
     {0x0C,0x32,0xC2,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},/*"~",94*/
     };
-// Display a single character at position x,y on the screen.
-// fc,bc are the foreground,background colors
-// num is the ASCII character number
-// size is the height of the character (either 12 or 16)
-// When mode is set, the background will be transparent.    
 void _LCD_DrawChar(u16 x,u16 y,u16 fc, u16 bc, char num, u8 size, u8 mode)
     {
         u8 temp;
@@ -701,11 +781,6 @@ void LCD_DrawChar(u16 x,u16 y,u16 fc, u16 bc, char num, u8 size, u8 mode)
         _LCD_DrawChar(x,y,fc,bc,num,size,mode);
         lcddev.select(0);
     }    
-// Display a string of characters starting at location x,y.
-// fc,bc are the foreground,background colors.
-// p is the pointer to the string.
-// size is the height of the character (either 12 or 16)
-// When mode is set, the background will be transparent.
 void LCD_DrawString(u16 x,u16 y, u16 fc, u16 bg, const char *p, u8 size, u8 mode)
     {
         lcddev.select(1);
@@ -719,7 +794,6 @@ void LCD_DrawString(u16 x,u16 y, u16 fc, u16 bg, const char *p, u8 size, u8 mode
         }
         lcddev.select(0);
     }
-
 static void _LCD_Fill(u16 sx,u16 sy,u16 ex,u16 ey,u16 color)
     {
         u16 i,j;
@@ -734,10 +808,6 @@ static void _LCD_Fill(u16 sx,u16 sy,u16 ex,u16 ey,u16 color)
         }
         LCD_WriteData16_End();
     }
-    
-//===========================================================================
-    // Draw a filled rectangle of lines of color c from (x1,y1) to (x2,y2).
-    //===========================================================================
 void LCD_DrawFillRectangle(u16 x1, u16 y1, u16 x2, u16 y2, u16 c)
     {
         lcddev.select(1);
@@ -745,20 +815,261 @@ void LCD_DrawFillRectangle(u16 x1, u16 y1, u16 x2, u16 y2, u16 c)
         lcddev.select(0);
     }
 
+//game logic
+void generate_choices() {
+    for (int i = 0; i < 3; i++) {
+        current_choices[i] = rand() % 19;
+        used_choices[i] = 0;
+    }
+}
+int can_place_block(int block[3][3], int x, int y) {
+    for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < 3; j++) {
+            if (block[i][j] == 1) {
+                if (x + i >= 10 || y + j >= 10 || grid[x + i][y + j] == 1)
+                    return 0;
+            }
+        }
+    }
+    return 1;
+}
+int clear_lines() {
+    int lines_cleared = 0;
+    for (int i = 0; i < 10; i++) { //check rows
+        int full = 1;
+        for (int j = 0; j < 10; j++) {
+            if (grid[i][j] == 0) {
+                full = 0;
+                break;
+            }
+        }
+        if (full) {
+            for (int j = 0; j < 10; j++) {
+                grid[i][j] = 0;
+            }
+            lines_cleared++;
+        }
+    }
+    for (int j = 0; j < 10; j++) { //check columns
+        int full = 1;
+        for (int i = 0; i < 10; i++) {
+            if (grid[i][j] == 0) {
+                full = 0;
+                break;
+            }
+        }
+        if (full) {
+            for (int i = 0; i < 10; i++) {
+                grid[i][j] = 0;
+            }
+            lines_cleared++;
+        }
+    }
+    currentscore += lines_cleared;
+    if (currentscore > highscore) {
+        highscore = currentscore;
+    }
+    update_oled(currentscore, highscore);
+    return lines_cleared;
+}
+int any_valid_placement_exists() {
+    for (int i = 0; i < 3; i++) {
+        if (used_choices[i]) continue;
+        for (int x = 0; x <= 10 - 3; x++) {
+            for (int y = 0; y <= 10 - 3; y++) {
+                if (can_place_block(blocks[current_choices[i]], x, y)) {
+                    return 1;
+                }
+            }
+        }
+    }
+    return 0;
+}
+void place_block(int block[3][3], int x, int y) {
+    for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < 3; j++) {
+            if (block[i][j] == 1)
+                grid[x + i][y + j] = 1;
+        }
+    }
+}
+int all_used() {
+    return used_choices[0] && used_choices[1] && used_choices[2];
+}
+
+//game logic to tft integration
+void display_block(int block[3][3], int x, int y) {
+    int step = 15;
+    int initx = x;
+    for (int i = 0; i < 3; i++) {
+        x = initx;
+        for (int j = 0; j < 3; j++) {
+            LCD_DrawFillRectangle(x, y, x+step, y+step, (block[i][j]) ? BLACK : WHITE);
+            x+=step;
+        }
+        y+=step; 
+    }    
+}
+void clear_title(int h) {
+    LCD_DrawString(20, h, BLACK, GRAY, "                           ", 16, 0);
+}
+void update_blocks() {
+    char a[5];
+    clear_title(240);
+    for (int i = 0; i < 3; i++) {
+        sprintf(a, "i: %d", i);
+        if (!used_choices[i]) {
+            LCD_DrawString(20+(60*i),240,BLACK,GRAY,a,16,0);
+            display_block(blocks[current_choices[i]],20+(60*i),260);
+        } 
+        else {
+            LCD_DrawString(20+(60*i),240,BLACK,GRAY,"Used",16,0);
+        }
+    } 
+}
+void update_title(char * displaystring) {
+    clear_title(225);
+    LCD_DrawString(20, 225, BLACK, GRAY, displaystring, 16, 0);
+}
+void update_grid(int step, int inity, int initx) {
+    char in[3];
+    int y = inity;
+    for (int i=0;i<10;i++) {
+        int x = initx;
+        for (int j=0;j<10;j++) {
+            LCD_DrawFillRectangle(x, y, x+step, y+step, (grid[i][j]) ? BLACK : WHITE);
+            x+=step;
+        }
+        y+=step; 
+    }
+    //row indices
+    for (int k=0;k<10;k++) {
+        snprintf(in, 3, "%d", k);
+        LCD_DrawString(25+(20*k),2,BLACK,GRAY,in,16,0);
+    }
+    //col indices
+    for (int l=0;l<10;l++) {
+        snprintf(in, 3, "%d", l);
+        LCD_DrawString(10,22+(20*l),BLACK,GRAY,in,16,0);
+    }
+}
+int getrow() {
+    int i;
+    snprintf(title, 24, "Enter Row For Block %c", key);
+    update_title(title);
+    i = get_keypress() - 48;
+    while (i > 9 && i < 0) {
+        snprintf(title, 24, "Invalid Row-Enter", key);
+        update_title(title);
+        i = get_keypress() - 48;
+    }
+    return i;
+}
+int getcol() {
+    int i;
+    snprintf(title, 24, "Enter Col For Block %c", key);
+    update_title(title);
+    i = get_keypress() - 48;
+    while (i > 9 && i < 0) {
+        snprintf(title, 24, "Invalid Column-Enter", key);
+        update_title(title);
+        i = get_keypress() - 48;
+    }
+    return i;
+}
+void game_restart() {
+    update_title("Game Over!"); //game end condition
+    nano_wait(1000000000);
+    currentscore=0;
+    for (int i=0;i<10;i++) {
+        for (int j=0;j<10;j++) {
+            grid[i][j] = 0;
+        }
+    }
+    for (int k =0;k<3;k++) {
+        current_choices[k] = -1;
+        used_choices[k] = 0;
+    }
+    clear_title(225);
+    clear_title(240);
+    update_grid(20,20,20);
+    generate_choices();
+    update_title("Choose a Block:\n");
+    update_blocks();
+    update_oled(currentscore,highscore);
+}
+void EXTI0_1_IRQHandler() {
+    EXTI->PR = EXTI_PR_PR0;
+    game_restart();
+}
+
 int main(void) {
     internal_clock();
 
-    //OLED Display SPI Testing
-    highscore=15;
+    //Inital Variable Declarations
+    highscore=0;
     currentscore=0;
+    
+    //Init GPIO for Keypad
     initc();
-    init_tim2();
+    init_tim7();
+    init_exti();
+
+    //OLED Display
     init_spi1();
     spi1_init_oled();
+    update_oled(currentscore,highscore);
 
-    //TFT Display SPI Testing
+    //TFT Display
     LCD_Setup();
-    LCD_Clear(WHITE);
-    LCD_DrawFillRectangle(20,20,30,30,BLUE);
-    
+    LCD_Clear(GRAY);
+
+    //starting the game
+    init_tim2_rand();
+    update_title("Press PB2 to Begin");
+    while (!(GPIOB->IDR & GPIO_IDR_2)) {}
+    uint32_t seed = TIM2->CNT;
+    srand(seed);
+    generate_choices();  //generate 3 block choices
+    while (1) {
+        while (1) {
+            update_grid(20,20,20);
+            if (all_used()) {
+                generate_choices(); //refresh if all blocks used
+            }
+            if (!any_valid_placement_exists()) {
+                game_restart();
+                break;
+            }
+        
+            //block choices
+            update_title("Choose a Block:\n");
+            update_blocks();
+            key = get_keypress();
+            while (((key!='1') && (key!='0') && (key!='2')) || (used_choices[key-48])) {
+                key = get_keypress();
+            }
+
+            //get placement
+            x = getrow();
+            y = getcol();
+        
+            //placement verification
+            bool canplace = can_place_block(blocks[current_choices[key-48]], x, y);
+            while (!canplace) {
+                snprintf(title, 24, "Invalid Placement", key);
+                update_title(title);
+                nano_wait(2000000000);
+                x = getrow();
+                y = getcol();
+                canplace = can_place_block(blocks[current_choices[key-48]], x, y);
+            }
+
+            //placing block and updating grid
+            place_block(blocks[current_choices[key-48]], x, y);
+            used_choices[key-48] = 1;
+            clear_lines();
+            update_grid(20,20,20);
+        }
+    }
 }
