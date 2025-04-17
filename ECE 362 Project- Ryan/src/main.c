@@ -1,3 +1,12 @@
+//PB2 on the devboard runs the random number generator
+//PA0 on the devboard is the "quit/restart game" button
+//keypad works the same as it did in labs
+//for the tft wiring, open up lab 7 and go to the tft/sd card extra read me
+//do the wiring exactly the same for the 9 pin side, except switch the spi sclk signal to pb13 and the spi mosi signal to pb15
+//this is because i was already using spi1 for the oled display and had to switch to using spi2, which ofc has different ports mapped
+//ignore the 5 pins on the other end of the tft display meant for the sd card, i didnt use them
+//use ports pa5, pa7, and pa15 for the oled display spi signals, 5 is sclk, 7 is mosi, and 15 is nss
+//the keypad should be mapped to pc0-7
 #include "stm32f0xx.h"
 #include <stdio.h>
 #include <stdint.h>
