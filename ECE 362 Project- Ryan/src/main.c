@@ -12,6 +12,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <time.h>
+#include <math.h>
 #include <stdbool.h>
 #include "lcd.h"
 
@@ -32,6 +33,8 @@ void internal_clock();
 #define DC_BIT (1<<DC_NUM)
 #define DC_HIGH do { GPIOB->BSRR = GPIO_BSRR_BS_14; } while(0)
 #define DC_LOW  do { GPIOB->BSRR = GPIO_BSRR_BR_14; } while(0)
+#define N 1000
+#define RATE 20000
 
 //Global Variables
 uint16_t highscore;
@@ -72,6 +75,12 @@ uint8_t col;
 char title[24];
 char key;
 int x, y;
+short int wavetable[N];
+int step0 = 0;
+int offset0 = 0;
+int step1 = 0;
+int offset1 = 0;
+uint32_t volume = 1024;
 
 //Keypad GPIO Stuff/Timer for random number generator
 void initc() {
@@ -875,6 +884,11 @@ int clear_lines() {
         }
     }
     currentscore += lines_cleared;
+    if (lines_cleared != 0) {
+        DAC->CR |= DAC_CR_EN1;
+        nano_wait(1000000000);
+        DAC->CR &= ~DAC_CR_EN1;
+    }
     if (currentscore > highscore) {
         highscore = currentscore;
     }
@@ -1012,6 +1026,62 @@ void EXTI0_1_IRQHandler() {
     game_restart();
 }
 
+
+//DAC Stuff
+void init_wavetable(void) {
+    for(int i=0; i < N; i++)
+        wavetable[i] = 32767 * sin(2 * M_PI * i / N);
+}
+void set_freq(int chan, float f) {
+    if (chan == 0) {
+        if (f == 0.0) {
+            step0 = 0;
+            offset0 = 0;
+        } else
+            step0 = (f * N / RATE) * (1<<16);
+    }
+    if (chan == 1) {
+        if (f == 0.0) {
+            step1 = 0;
+            offset1 = 0;
+        } else
+            step1 = (f * N / RATE) * (1<<16);
+    }
+}
+void setup_dac(void) {
+    RCC->AHBENR |= RCC_AHBENR_GPIOAEN;
+    GPIOA->MODER |= 0x00000300;
+    RCC->APB1ENR |= RCC_APB1ENR_DACEN;
+    DAC->CR &= ~0x00000038; 
+    DAC->CR |= DAC_CR_TEN1;
+    //DAC->CR |= DAC_CR_EN1;
+}
+void TIM6_DAC_IRQHandler() {
+    TIM6->SR &= ~TIM_SR_UIF;
+    offset0 += step0;
+    offset1 += step1;
+    if (offset0 >= (N << 16)) {
+        offset0 -= (N << 16);
+    }
+    if (offset1 >= (N << 16)) {
+        offset1 -= (N << 16);
+    }
+    int samp = wavetable[offset0>>16] + wavetable[offset1>>16];
+    samp *= volume;
+    samp = samp >> 17;
+    samp += 2048;
+    DAC->DHR12R1 = samp;
+}
+void init_tim6(void) {
+    RCC->APB1ENR |= RCC_APB1ENR_TIM6EN; //clock enable
+    TIM6->PSC = 2-1;
+    TIM6->ARR = (48000000/(2*RATE))-1;
+    TIM6->DIER |= TIM_DIER_UIE; //interrupt enabled on update
+    NVIC->ISER[0] |= 0x00020000; //enabling tim6 DAC interrupt in nvic
+    TIM6->CR2 |= TIM_CR2_MMS_1;
+    TIM6->CR1 |= TIM_CR1_CEN; //counter enable
+}
+
 int main(void) {
     internal_clock();
 
@@ -1019,6 +1089,12 @@ int main(void) {
     highscore=0;
     currentscore=0;
     
+    //DAC Initialization
+    init_wavetable();
+    setup_dac();
+    init_tim6();
+    set_freq(1,1200);
+
     //Init GPIO for Keypad
     initc();
     init_tim7();
